@@ -28,8 +28,6 @@
 }
 
 .date-picker-trigger {
-  position: absolute;
-  right: 0;
   border: none;
   background-color: transparent;
   cursor: pointer;
