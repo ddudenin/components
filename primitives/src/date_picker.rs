@@ -1,20 +1,136 @@
 //! Defines the [`DatePicker`] component and its subcomponents, which allowing users to enter or select a date value
 
 use crate::{
-    calendar::{
-        Calendar, CalendarGrid, CalendarHeader, CalendarNavigation, CalendarNextMonthButton,
-        CalendarPreviousMonthButton, CalendarSelectMonth, CalendarSelectYear,
-    },
-    focus::{use_focus_provider, FocusState},
-    use_animated_open, use_effect, use_id_or, use_unique_id,
+    popover::{PopoverContent, PopoverRoot, PopoverTrigger},
+    ContentAlign,
 };
 
+use crate::dioxus_elements::input_data::MouseButton;
 use dioxus::prelude::*;
-use time::{macros::format_description, Date, UtcDateTime};
+use time::{macros::format_description, Date};
 
 /// The value of the [`DatePicker`] component.
-#[derive(Debug, Clone, PartialEq)]
-pub enum DatePickerValue {
+#[derive(Copy, Clone)]
+pub struct DatePickerValue {
+    /// A dates range value or single day
+    is_range: bool,
+    /// Current date value
+    value: DateValue,
+}
+
+impl DatePickerValue {
+    /// Create empty value for a single day
+    pub fn day_none() -> Self {
+        Self {
+            is_range: false,
+            value: DateValue::Empty,
+        }
+    }
+
+    /// Create empty value for a date range
+    pub fn range_none() -> Self {
+        Self {
+            is_range: true,
+            value: DateValue::Empty,
+        }
+    }
+
+    /// Create new value by given date
+    pub fn new(is_range: bool, date: Date) -> Self {
+        let value = if is_range {
+            DateValue::Range {
+                start: date,
+                end: None,
+            }
+        } else {
+            DateValue::Single { date }
+        };
+
+        Self { is_range, value }
+    }
+
+    /// Create new value by given date range
+    pub fn new_range(start: Date, end: Date) -> Self {
+        let value = if end < start {
+            DateValue::Range {
+                start: end,
+                end: Some(start),
+            }
+        } else {
+            DateValue::Range {
+                start,
+                end: Some(end),
+            }
+        };
+        Self {
+            is_range: true,
+            value,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.value == DateValue::Empty
+    }
+
+    fn is_range(&self) -> bool {
+        self.is_range
+    }
+
+    fn set_date(&self, date: Option<Date>) -> Self {
+        match date {
+            Some(date) => match self.value {
+                DateValue::Range { start, end } => {
+                    if end.is_some() {
+                        Self::new(self.is_range, date)
+                    } else {
+                        Self::new_range(start, date)
+                    }
+                }
+                _ => Self::new(self.is_range, date),
+            },
+            None => Self {
+                value: DateValue::Empty,
+                ..*self
+            },
+        }
+    }
+
+    fn is_equal_date(&self, d: Option<Date>) -> bool {
+        match d {
+            Some(d) => match self.value {
+                DateValue::Single { date } => date == d,
+                DateValue::Range { start, end } => {
+                    if let Some(date) = end {
+                        if date == d {
+                            return true;
+                        }
+                    }
+
+                    start == d
+                }
+                DateValue::Empty => false,
+            },
+            None => self.value == DateValue::Empty,
+        }
+    }
+
+    fn is_selected(&self) -> bool {
+        match self.value {
+            DateValue::Range { end, .. } => end.is_some(),
+            _ => true,
+        }
+    }
+}
+
+impl std::fmt::Display for DatePickerValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.value)
+    }
+}
+
+/// The value type of the [`DatePicker`] component.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum DateValue {
     /// A single value for the date picker
     Single {
         /// The selected date
@@ -27,59 +143,22 @@ pub enum DatePickerValue {
         /// The last range date
         end: Option<Date>,
     },
+    /// None value for the date picker
+    Empty,
 }
 
-impl DatePickerValue {
-    fn set(&self, date: Date) -> Self {
-        match self {
-            DatePickerValue::Single { .. } => DatePickerValue::Single { date },
-            DatePickerValue::Range { start, end } => match end {
-                Some(_) => DatePickerValue::Range {
-                    start: date,
-                    end: None,
-                },
-                None => {
-                    if date < *start {
-                        DatePickerValue::Range {
-                            start: date,
-                            end: Some(*start),
-                        }
-                    } else {
-                        DatePickerValue::Range {
-                            start: *start,
-                            end: Some(date),
-                        }
-                    }
-                }
-            },
-        }
-    }
-
-    fn date(&self) -> Date {
-        match self {
-            DatePickerValue::Single { date } => *date,
-            DatePickerValue::Range { start, end } => {
-                if let Some(date) = end {
-                    return *date;
-                }
-
-                *start
-            }
-        }
-    }
-}
-
-impl std::fmt::Display for DatePickerValue {
+impl std::fmt::Display for DateValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DatePickerValue::Single { date } => write!(f, "{date}"),
-            DatePickerValue::Range { start, end } => {
+            DateValue::Single { date } => write!(f, "{date}"),
+            DateValue::Range { start, end } => {
                 let end_str = match end {
-                    Some(value) => value.to_string(),
+                    Some(date) => date.to_string(),
                     None => String::default(),
                 };
                 write!(f, "{start} - {end_str}")
             }
+            DateValue::Empty => write!(f, ""),
         }
     }
 }
@@ -88,28 +167,30 @@ impl std::fmt::Display for DatePickerValue {
 #[derive(Copy, Clone)]
 struct DatePickerContext {
     // State
-    value: ReadOnlySignal<Option<DatePickerValue>>,
-    on_value_change: Callback<Option<DatePickerValue>>,
+    value: ReadOnlySignal<DatePickerValue>,
+    on_value_change: Callback<DatePickerValue>,
+    selected_date: ReadOnlySignal<Option<Date>>,
     open: Signal<bool>,
-    focus_state: FocusState,
+    read_only: ReadOnlySignal<bool>,
 
     // Configuration
     disabled: ReadOnlySignal<bool>,
-    calendar_id: Signal<Option<String>>,
+    separator: &'static str,
+    format_placeholder: Callback<(), String>,
 }
 
 impl DatePickerContext {
     fn set_date(&mut self, date: Option<Date>) {
-        match date {
-            Some(date) => match (self.value)() {
-                Some(value) => self.on_value_change.call(Some(value.set(date))),
-                None => {
-                    tracing::error!("create new");
-                    self.on_value_change
-                        .call(Some(DatePickerValue::Single { date }))
-                }
-            },
-            None => self.on_value_change.call(None),
+        let value = (self.value)();
+        if value.is_equal_date(date) {
+            return;
+        }
+
+        let value = value.set_date(date);
+        self.on_value_change.call(value);
+
+        if value.is_selected() {
+            self.open.set(false);
         }
     }
 }
@@ -118,30 +199,38 @@ impl DatePickerContext {
 #[derive(Props, Clone, PartialEq)]
 pub struct DatePickerProps {
     /// The controlled value of the date picker
-    pub value: ReadOnlySignal<Option<DatePickerValue>>,
+    pub value: ReadOnlySignal<DatePickerValue>,
 
     /// Callback when value changes
     #[props(default)]
-    pub on_value_change: Callback<Option<DatePickerValue>>,
+    pub on_value_change: Callback<DatePickerValue>,
 
     /// The selected date
     #[props(default)]
-    pub selected_date: Signal<Option<Date>>,
-
-    /// Whether focus should loop around when reaching the end
-    #[props(default = ReadOnlySignal::new(Signal::new(true)))]
-    pub roving_loop: ReadOnlySignal<bool>,
+    pub selected_date: ReadOnlySignal<Option<Date>>,
 
     /// Whether the date picker is disabled
     #[props(default)]
     pub disabled: ReadOnlySignal<bool>,
 
+    /// Whether the date picker is enable user input
+    #[props(default = ReadOnlySignal::new(Signal::new(false)))]
+    pub read_only: ReadOnlySignal<bool>,
+
+    /// Separator between range value
+    #[props(default = " - ")]
+    pub separator: &'static str,
+
+    /// Callback when display placeholder
+    #[props(default = Callback::new(|_| "YYYY-MM-DD".to_string()))]
+    pub on_format_placeholder: Callback<(), String>,
+
     /// Additional attributes to extend the date picker element
     #[props(extends = GlobalAttributes)]
-    attributes: Vec<Attribute>,
+    pub attributes: Vec<Attribute>,
 
     /// The children of the date picker element
-    children: Element,
+    pub children: Element,
 }
 
 /// # DatePicker
@@ -159,17 +248,17 @@ pub struct DatePickerProps {
 #[component]
 pub fn DatePicker(props: DatePickerProps) -> Element {
     let open = use_signal(|| false);
-    let calendar_id = use_signal(|| None);
-    let focus_state = use_focus_provider(props.roving_loop);
 
     // Create context provider for child components
     use_context_provider(|| DatePickerContext {
         open,
-        calendar_id,
-        focus_state,
         value: props.value,
         on_value_change: props.on_value_change,
+        selected_date: props.selected_date,
         disabled: props.disabled,
+        read_only: props.read_only,
+        separator: props.separator,
+        format_placeholder: props.on_format_placeholder,
     });
 
     rsx! {
@@ -188,44 +277,46 @@ pub fn DatePicker(props: DatePickerProps) -> Element {
 pub struct DatePickerTriggerProps {
     /// Additional attributes for the trigger button
     #[props(extends = GlobalAttributes)]
-    attributes: Vec<Attribute>,
+    pub attributes: Vec<Attribute>,
 
     /// The children to render inside the trigger
-    children: Element,
+    pub children: Element,
 }
 
 /// # DatePickerTrigger
 ///
-/// The trigger button for the [`DatePicker`](super::date_picker::DatePicker) component which controls if the [`DatePickerCalendar`](super::date_picker::DatePickerCalendar) is rendered.
-///
-/// This must be used inside a [`DatePicker`](super::date_picker::DatePicker) component.
+/// The `PopoverTrigger` is a button that toggles the visibility of the [`PopoverContent`].
 ///
 /// ```rust
 /// ```
 #[component]
 pub fn DatePickerTrigger(props: DatePickerTriggerProps) -> Element {
-    let ctx = use_context::<DatePickerContext>();
+    let mut ctx = use_context::<DatePickerContext>();
     let mut open = ctx.open;
 
+    use_effect(move || {
+        let date = (ctx.selected_date)();
+        ctx.set_date(date);
+    });
+
     rsx! {
-        button {
-            // Standard HTML attributes
-            disabled: (ctx.disabled)(),
-
-            onclick: move |_| {
-                open.toggle();
-            },
-
-            // ARIA attributes
-            aria_haspopup: "calendarbox",
-            aria_expanded: open(),
-            aria_controls: ctx.calendar_id,
-
-            // Pass through other attributes
-            ..props.attributes,
-
-            // Render children (options)
-            {props.children}
+        PopoverRoot {
+            class: "popover",
+            open: open(),
+            on_open_change: move |v| open.set(v),
+            PopoverTrigger { attributes: props.attributes,
+                svg {
+                    class: "date-picker-expand-icon",
+                    view_box: "0 0 24 24",
+                    xmlns: "http://www.w3.org/2000/svg",
+                    polyline { points: "6 9 12 15 18 9" }
+                }
+            }
+            PopoverContent {
+                gap: "0.25rem",
+                align: ContentAlign::End,
+                {props.children}
+            }
         }
     }
 }
@@ -235,10 +326,10 @@ pub fn DatePickerTrigger(props: DatePickerTriggerProps) -> Element {
 pub struct DatePickerInputProps {
     /// Additional attributes for the value element
     #[props(extends = GlobalAttributes)]
-    attributes: Vec<Attribute>,
+    pub attributes: Vec<Attribute>,
 
     /// The children of the date picker element
-    children: Element,
+    pub children: Element,
 }
 
 /// # DatePickerInput
@@ -251,152 +342,43 @@ pub struct DatePickerInputProps {
 pub fn DatePickerInput(props: DatePickerInputProps) -> Element {
     let mut ctx = use_context::<DatePickerContext>();
 
-    let display_value = use_memo(move || match (ctx.value)() {
-        Some(value) => value.to_string(),
-        None => String::default(),
-    });
+    let display_value = use_memo(move || ctx.value.to_string());
+
+    let placeholder = {
+        let is_range = (ctx.value)().is_range();
+        let capacity = if is_range { 2 } else { 1 };
+        let text = ctx.format_placeholder.call(());
+        vec![text; capacity].join(ctx.separator)
+    };
 
     rsx! {
         input {
-            placeholder: "YYYY-MM-DD",
+            style: "min-width: 240px",
+            placeholder,
             value: display_value,
+            disabled: ctx.disabled,
+            readonly: ctx.read_only,
+            cursor: if (ctx.read_only)() { "pointer" } else { "text" },
             oninput: move |e| {
                 let text = e.value().parse().unwrap_or(display_value());
-
                 let format = format_description!("[year]-[month]-[day]");
-                if let Ok(date) = Date::parse(&text, &format) {
-                    ctx.set_date(Some(date));
+                let parts = text.split(ctx.separator);
+                for (index, str) in parts.enumerate() {
+                    if (ctx.value)().is_empty() || index > 0 {
+                        if let Ok(date) = Date::parse(str, &format) {
+                            tracing::info!("oninput: {date}");
+                            ctx.set_date(Some(date));
+                        }
+                    }
+                }
+            },
+            onpointerdown: move |event| {
+                if (ctx.read_only)() && event.trigger_button() == Some(MouseButton::Primary) {
+                    ctx.open.toggle();
                 }
             },
             ..props.attributes,
         }
         {props.children}
-    }
-}
-
-/// The props for the [`DatePickerCalendar`] component
-#[derive(Props, Clone, PartialEq)]
-pub struct DatePickerCalendarProps {
-    /// The ID of the calendar for ARIA attributes
-    #[props(default)]
-    pub id: ReadOnlySignal<Option<String>>,
-
-    /// Additional attributes for the list
-    #[props(extends = GlobalAttributes)]
-    attributes: Vec<Attribute>,
-}
-
-/// # DatePickerCalendar
-///
-/// The Calendar popover for the [`DatePicker`](super::date_picker::DatePicker).
-/// The calendar will only be rendered when the DatePicker is open.
-///
-/// This must be used inside a [`DatePicker`](super::date_picker::DatePicker).
-///
-/// ## Example
-///
-/// ```rust
-/// ```
-#[component]
-pub fn DatePickerCalendar(props: DatePickerCalendarProps) -> Element {
-    let mut ctx = use_context::<DatePickerContext>();
-
-    let id = use_unique_id();
-    let id = use_id_or(id, props.id);
-    use_effect(move || {
-        ctx.calendar_id.set(Some(id()));
-    });
-
-    let mut open = ctx.open;
-    let mut calendarbox_ref: Signal<Option<std::rc::Rc<MountedData>>> = use_signal(|| None);
-    let focused = move || open() && !ctx.focus_state.any_focused();
-
-    use_effect(move || {
-        let Some(calendarbox_ref) = calendarbox_ref() else {
-            return;
-        };
-        if focused() {
-            spawn(async move {
-                _ = calendarbox_ref.set_focus(true);
-            });
-        }
-    });
-
-    let onkeydown = move |event: KeyboardEvent| {
-        let key = event.key();
-
-        if key == Key::Escape {
-            open.set(false);
-            event.prevent_default();
-            event.stop_propagation();
-        }
-    };
-
-    let render = use_animated_open(id, open);
-    let render = use_memo(render);
-
-    let mut selected_date = use_signal(|| None::<Date>);
-    let mut view_date = use_signal(|| UtcDateTime::now().date());
-
-    use_effect(move || match (ctx.value)() {
-        Some(value) => {
-            let date = value.date();
-            view_date.set(date);
-            selected_date.set(Some(date));
-        }
-        None => selected_date.set(None),
-    });
-
-    rsx! {
-        if render() {
-            div {
-                id,
-                role: "calendarbox",
-                tabindex: if focused() { "0" } else { "-1" },
-
-                // Data attributes
-                "data-state": if open() { "open" } else { "closed" },
-
-                onmounted: move |evt| calendarbox_ref.set(Some(evt.data())),
-                onkeydown,
-
-                ..props.attributes,
-
-                Calendar {
-                    selected_date: selected_date(),
-                    on_date_change: move |date| {
-                        ctx.set_date(date);
-                        open.set(false);
-                    },
-                    view_date: view_date(),
-                    on_view_change: move |new_view: Date| {
-                        view_date.set(new_view);
-                    },
-                    CalendarHeader {
-                        CalendarNavigation {
-                            CalendarPreviousMonthButton {
-                                svg {
-                                    class: "calendar-previous-month-icon",
-                                    view_box: "0 0 24 24",
-                                    xmlns: "http://www.w3.org/2000/svg",
-                                    polyline { points: "15 6 9 12 15 18" }
-                                }
-                            }
-                            CalendarSelectMonth { class: "calendar-month-select" }
-                            CalendarSelectYear { class: "calendar-year-select" }
-                            CalendarNextMonthButton {
-                                svg {
-                                    class: "calendar-next-month-icon",
-                                    view_box: "0 0 24 24",
-                                    xmlns: "http://www.w3.org/2000/svg",
-                                    polyline { points: "9 18 15 12 9 6" }
-                                }
-                            }
-                        }
-                    }
-                    CalendarGrid {}
-                }
-            }
-        }
     }
 }
