@@ -1,8 +1,9 @@
 use crate::components::calendar::component::*;
 use dioxus::prelude::*;
-use dioxus_primitives::calendar::CalendarProps;
-use dioxus_primitives::date_picker::{
-    self, DatePickerInputProps, DatePickerProps, DatePickerTriggerProps,
+
+use dioxus_primitives::{
+    calendar::CalendarProps,
+    date_picker::{self, DatePickerInputProps, DatePickerProps, DatePickerTriggerProps},
 };
 
 use time::UtcDateTime;
@@ -56,6 +57,12 @@ pub fn DatePickerTrigger(props: DatePickerTriggerProps) -> Element {
 #[component]
 pub fn DatePickerCalendar(props: CalendarProps) -> Element {
     let mut view_date = use_signal(|| UtcDateTime::now().date());
+
+    use_effect(move || {
+        if let Some(date) = (props.selected_date)() {
+            view_date.set(date);
+        }
+    });
 
     rsx! {
         Calendar {

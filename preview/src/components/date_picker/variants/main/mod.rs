@@ -8,7 +8,7 @@ use time::{Date, Month, Weekday};
 
 #[component]
 pub fn Demo() -> Element {
-    let v = DatePickerValue::range_none();
+    let v = DatePickerValue::new_day(None);
     let mut value = use_signal(|| v);
 
     let mut selected_date = use_signal(|| None::<Date>);
@@ -21,9 +21,9 @@ pub fn Demo() -> Element {
                 on_value_change: move |v| {
                     tracing::info!("Selected: {v}");
                     value.set(v);
+                    selected_date.set(v.date());
                 },
                 on_format_placeholder: || tid!("YMD"),
-                read_only: true,
                 DatePickerInput {
                     DatePickerTrigger {
                         aria_label: "DatePicker Trigger",

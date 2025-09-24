@@ -1,11 +1,11 @@
 //! Defines the [`DatePicker`] component and its subcomponents, which allowing users to enter or select a date value
 
 use crate::{
+    dioxus_elements::input_data::MouseButton,
     popover::{PopoverContent, PopoverRoot, PopoverTrigger},
     ContentAlign,
 };
 
-use crate::dioxus_elements::input_data::MouseButton;
 use dioxus::prelude::*;
 use time::{macros::format_description, Date};
 
@@ -19,38 +19,37 @@ pub struct DatePickerValue {
 }
 
 impl DatePickerValue {
-    /// Create empty value for a single day
-    pub fn day_none() -> Self {
-        Self {
-            is_range: false,
-            value: DateValue::Empty,
+    /// Create a single day value
+    pub fn new_day(date: Option<Date>) -> Self {
+        let is_range = false;
+
+        match date {
+            Some(date) => Self {
+                is_range,
+                value: DateValue::Single { date },
+            },
+            None => Self::new_empty(is_range),
         }
     }
 
-    /// Create empty value for a date range
-    pub fn range_none() -> Self {
-        Self {
-            is_range: true,
-            value: DateValue::Empty,
+    /// Create new date range value
+    pub fn new_range(date: Option<Date>) -> Self {
+        let is_range = true;
+
+        match date {
+            Some(date) => Self {
+                is_range,
+                value: DateValue::Range {
+                    start: date,
+                    end: None,
+                },
+            },
+            None => Self::new_empty(is_range),
         }
     }
 
-    /// Create new value by given date
-    pub fn new(is_range: bool, date: Date) -> Self {
-        let value = if is_range {
-            DateValue::Range {
-                start: date,
-                end: None,
-            }
-        } else {
-            DateValue::Single { date }
-        };
-
-        Self { is_range, value }
-    }
-
-    /// Create new value by given date range
-    pub fn new_range(start: Date, end: Date) -> Self {
+    /// Create full date range value
+    pub fn range(start: Date, end: Date) -> Self {
         let value = if end < start {
             DateValue::Range {
                 start: end,
@@ -67,51 +66,62 @@ impl DatePickerValue {
             value,
         }
     }
-
-    fn is_empty(&self) -> bool {
-        self.value == DateValue::Empty
+    fn new(is_range: bool, date: Option<Date>) -> Self {
+        if is_range {
+            Self::new_range(date)
+        } else {
+            Self::new_day(date)
+        }
     }
 
-    fn is_range(&self) -> bool {
-        self.is_range
+    fn new_empty(is_range: bool) -> Self {
+        Self {
+            is_range,
+            value: DateValue::Empty,
+        }
+    }
+
+    fn part_count(&self) -> usize {
+        if self.is_range {
+            2
+        } else {
+            1
+        }
     }
 
     fn set_date(&self, date: Option<Date>) -> Self {
-        match date {
-            Some(date) => match self.value {
-                DateValue::Range { start, end } => {
-                    if end.is_some() {
-                        Self::new(self.is_range, date)
-                    } else {
-                        Self::new_range(start, date)
+        match self.value {
+            DateValue::Range { start, end } => {
+                if end.is_some() {
+                    Self::new_range(date)
+                } else {
+                    match date {
+                        Some(end) => Self::range(start, end),
+                        None => *self,
                     }
                 }
-                _ => Self::new(self.is_range, date),
-            },
-            None => Self {
-                value: DateValue::Empty,
-                ..*self
-            },
+            }
+            _ => Self::new(self.is_range, date),
         }
     }
 
-    fn is_equal_date(&self, d: Option<Date>) -> bool {
-        match d {
-            Some(d) => match self.value {
-                DateValue::Single { date } => date == d,
-                DateValue::Range { start, end } => {
-                    if let Some(date) = end {
-                        if date == d {
-                            return true;
-                        }
-                    }
-
-                    start == d
+    /// Return current selected date
+    pub fn date(&self) -> Option<Date> {
+        match self.value {
+            DateValue::Single { date } => Some(date),
+            DateValue::Range { start, end } => {
+                if end.is_some() {
+                    return end;
                 }
-                DateValue::Empty => false,
-            },
-            None => self.value == DateValue::Empty,
+
+                Some(start)
+            }
+            DateValue::Empty => None,
         }
+    }
+
+    fn is_equal_date(&self, date: Option<Date>) -> bool {
+        self.date() == date
     }
 
     fn is_selected(&self) -> bool {
@@ -345,8 +355,7 @@ pub fn DatePickerInput(props: DatePickerInputProps) -> Element {
     let display_value = use_memo(move || ctx.value.to_string());
 
     let placeholder = {
-        let is_range = (ctx.value)().is_range();
-        let capacity = if is_range { 2 } else { 1 };
+        let capacity = (ctx.value)().part_count();
         let text = ctx.format_placeholder.call(());
         vec![text; capacity].join(ctx.separator)
     };
@@ -361,14 +370,17 @@ pub fn DatePickerInput(props: DatePickerInputProps) -> Element {
             cursor: if (ctx.read_only)() { "pointer" } else { "text" },
             oninput: move |e| {
                 let text = e.value().parse().unwrap_or(display_value());
+                if text.is_empty() {
+                    ctx.set_date(None);
+                    return;
+                }
+
                 let format = format_description!("[year]-[month]-[day]");
                 let parts = text.split(ctx.separator);
-                for (index, str) in parts.enumerate() {
-                    if (ctx.value)().is_empty() || index > 0 {
-                        if let Ok(date) = Date::parse(str, &format) {
-                            tracing::info!("oninput: {date}");
-                            ctx.set_date(Some(date));
-                        }
+                for str in parts {
+                    let date = Date::parse(str, &format).ok();
+                    if date.is_some() {
+                        ctx.set_date(date);
                     }
                 }
             },
