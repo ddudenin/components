@@ -1,34 +1,14 @@
 use dioxus::prelude::*;
 use dioxus_primitives::drag_and_drop_list::{self, DragAndDropListItemProps, DragAndDropListProps};
 
-use strum::{Display, EnumIter, IntoEnumIterator};
-
-#[derive(EnumIter, Display)]
-enum Animals {
-    Cat,
-    Cow,
-    Dog,
-    Fox,
-    Pig,
-}
-
-impl Animals {
-    const fn emoji(&self) -> &'static str {
-        match self {
-            Animals::Cat => "🐱",
-            Animals::Cow => "🐮",
-            Animals::Dog => "🐶",
-            Animals::Fox => "🦊",
-            Animals::Pig => "🐷",
-        }
-    }
-}
-
 pub fn example_items() -> Vec<Element> {
-    Animals::iter()
-        .map(|a| {
+    let animals = ["Cat 🐱", "Cow 🐮", "Dog 🐶", "Fox 🦊", "Pig 🐷"];
+
+    animals
+        .iter()
+        .map(|&text| {
             rsx! {
-                {format!("{} {a}", a.emoji())}
+                {text}
             }
         })
         .collect()
